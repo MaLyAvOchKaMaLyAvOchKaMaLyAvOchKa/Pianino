@@ -48,7 +48,6 @@ $tracksCount = readInt($data, $offset, 2);
 $division = readInt($data, $offset, 2);
 
 $ticksPerQuarter = ($division & 0x8000) ? 120 : $division;
-
 $rawEvents = [];
 
 for ($t = 0; $t < $tracksCount; $t++) {
@@ -79,15 +78,14 @@ for ($t = 0; $t < $tracksCount; $t++) {
             $velocity = ord($data[$offset++]);
             
             $ms = round(($currentTick * 500000) / ($ticksPerQuarter * 1000));
-            $rawEvents[] = ['ms' => $ms, 'note' => $note, 'vel' => $velocity, 'dur' => 500, 'ch' => $channel];
+            $rawEvents[] = ['ms' => $ms, 'note' => $note, 'vel' => $velocity, 'ch' => $channel];
             
         } elseif ($eventType == 0x80) {
             $note = ord($data[$offset++]);
-            $velocity = 0;
-            $offset++;
+            $velocity = ord($data[$offset++]); // Читаем реальную velocity отпускания
             
             $ms = round(($currentTick * 500000) / ($ticksPerQuarter * 1000));
-            $rawEvents[] = ['ms' => $ms, 'note' => $note, 'vel' => 0, 'dur' => 0, 'ch' => $channel];
+            $rawEvents[] = ['ms' => $ms, 'note' => $note, 'vel' => 0, 'ch' => $channel];
             
         } elseif ($eventType == 0xC0 || $eventType == 0xD0) {
             $offset += 1;
@@ -106,43 +104,43 @@ usort($rawEvents, function($a, $b) {
     return $a['ms'] - $b['ms'];
 });
 
-// Вычисляем длительность нот и убираем дубликаты нажатий на одном и том же миллисекунде
-$activeNotes = [];
-$processedNotes = [];
+$output = [];
+$activeNotes = []; // Хранит индексы активных нажатий для каждой ноты и канала
 
-foreach ($rawEvents as &$ev) {
+foreach ($rawEvents as $ev) {
     $note = $ev['note'];
-    if ($ev['vel'] > 0) {
-        // Уникальный ключ для проверки дублей на том же мс
-        $dupKey = $ev['ms'] . "_" . $note;
-        if (isset($processedNotes[$dupKey])) {
-            continue; // Пропускаем дублирующееся нажатие
+    $ms = $ev['ms'];
+    $vel = $ev['vel'];
+    $ch = $ev['ch'];
+    
+    $key = $ch . "_" . $note;
+
+    if ($vel > 0) {
+        // Если нота уже была зажата — принудительно закрываем предыдущую перед открытием новой
+        if (isset($activeNotes[$key])) {
+            $idx = $activeNotes[$key];
+            $startMs = $output[$idx][0];
+            $duration = max(50, $ms - $startMs);
+            $output[$idx][3] = $duration;
+            unset($activeNotes[$key]);
         }
-        $processedNotes[$dupKey] = true;
-        
-        $activeNotes[$note] = [
-            'ms' => $ev['ms'],
-            'index' => count($output ?? [])
-        ];
-        // Временный слот в выводе
-        $output[] = [$ev['ms'], $note, $ev['vel'], 500, $ev['ch']];
+
+        // Добавляем новое нажатие [время, нота, громкость, длительность(пока заглушка), канал]
+        $activeNotes[$key] = count($output);
+        $output[] = [$ms, $note, $vel, 200, $ch];
     } else {
-        if (isset($activeNotes[$note])) {
-            $startIndex = $activeNotes[$note]['index'];
-            $startMs = $activeNotes[$note]['ms'];
-            $duration = max(50, $ev['ms'] - $startMs);
-            
-            // Обновляем длительность у ранее записанной ноты
-            if (isset($output[$startIndex])) {
-                $output[$startIndex][3] = $duration;
-            }
-            unset($activeNotes[$note]);
+        // Событие отпускания ноты (Note Off или vel == 0)
+        if (isset($activeNotes[$key])) {
+            $idx = $activeNotes[$key];
+            $startMs = $output[$idx][0];
+            $duration = max(50, $ms - $startMs);
+            $output[$idx][3] = $duration;
+            unset($activeNotes[$key]);
         }
     }
 }
-unset($ev);
 
-// Собираем обратно в строку для E2
+// Собираем в итоговую строку для E2
 $finalOutput = [];
 foreach ($output as $item) {
     $finalOutput[] = implode(",", $item);
