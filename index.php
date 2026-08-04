@@ -49,7 +49,7 @@ $division = readInt($data, $offset, 2);
 
 $ticksPerQuarter = ($division & 0x8000) ? 120 : $division;
 
-$output = [];
+$rawEvents = [];
 
 for ($t = 0; $t < $tracksCount; $t++) {
     $chunkType = readBytes($data, $offset, 4);
@@ -72,30 +72,72 @@ for ($t = 0; $t < $tracksCount; $t++) {
         }
         
         $eventType = $statusByte & 0xF0;
+        $channel = $statusByte & 0x0F;
         
         if ($eventType == 0x90) {
             $note = ord($data[$offset++]);
             $velocity = ord($data[$offset++]);
             
             $ms = round(($currentTick * 500000) / ($ticksPerQuarter * 1000));
-            $output[] = "$ms,$note,$velocity";
+            
+            if ($velocity > 0) {
+                $rawEvents[] = ['time' => $ms, 'note' => $note, 'vel' => $velocity, 'type' => 'on', 'channel' => $channel, 'track' => $t];
+            } else {
+                $rawEvents[] = ['time' => $ms, 'note' => $note, 'vel' => 0, 'type' => 'off', 'channel' => $channel, 'track' => $t];
+            }
             
         } elseif ($eventType == 0x80) {
             $note = ord($data[$offset++]);
-            $velocity = 0;
-            $offset++;
+            $velocity = ord($data[$offset++]); // считываем второй байт (velocity/release)
             
             $ms = round(($currentTick * 500000) / ($ticksPerQuarter * 1000));
-            $output[] = "$ms,$note,0";
+            $rawEvents[] = ['time' => $ms, 'note' => $note, 'vel' => 0, 'type' => 'off', 'channel' => $channel, 'track' => $t];
             
         } elseif ($eventType == 0xC0 || $eventType == 0xD0) {
             $offset += 1;
-        } elseif ($eventType == 0xE0 || $eventType == 0x80 || $eventType == 0x90 || $eventType == 0xA0 || $eventType == 0xB0) {
+        } elseif ($eventType == 0xE0 || $eventType == 0xA0 || $eventType == 0xB0) {
             $offset += 2;
         } elseif ($statusByte == 0xFF) {
             $metaType = ord($data[$offset++]);
             $len = readVlv($data, $offset);
             $offset += $len;
+        }
+    }
+}
+
+// Сортируем события по времени
+usort($rawEvents, function($a, $b) {
+    return $a['time'] - $b['time'];
+});
+
+// Связываем Note On с Note Off для вычисления длительности
+$activeNotes = [];
+$output = [];
+
+foreach ($rawEvents as $ev) {
+    $time = $ev['time'];
+    $note = $ev['note'];
+    $vel = $ev['vel'];
+    $type = $ev['type'];
+    $channel = $ev['channel'];
+    
+    // Ключ для отслеживания конкретной ноты
+    $key = $note . '_' . $channel;
+    
+    if ($type == 'on') {
+        // Если нота уже играла, принудительно закрываем ее
+        if (isset($activeNotes[$key])) {
+            $startData = $activeNotes[$key];
+            $duration = max(50, $time - $startData['time']);
+            $output[] = "{$startData['time']},{$startData['note']},{$startData['vel']},{$duration},{$startData['channel']}";
+        }
+        $activeNotes[$key] = ['time' => $time, 'note' => $note, 'vel' => $vel, 'channel' => $channel];
+    } else {
+        if (isset($activeNotes[$key])) {
+            $startData = $activeNotes[$key];
+            $duration = max(50, $time - $startData['time']);
+            $output[] = "{$startData['time']},{$startData['note']},{$startData['vel']},{$duration},{$startData['channel']}";
+            unset($activeNotes[$key]);
         }
     }
 }
