@@ -79,19 +79,15 @@ for ($t = 0; $t < $tracksCount; $t++) {
             $velocity = ord($data[$offset++]);
             
             $ms = round(($currentTick * 500000) / ($ticksPerQuarter * 1000));
-            
-            if ($velocity > 0) {
-                $rawEvents[] = ['time' => $ms, 'note' => $note, 'vel' => $velocity, 'type' => 'on', 'channel' => $channel, 'track' => $t];
-            } else {
-                $rawEvents[] = ['time' => $ms, 'note' => $note, 'vel' => 0, 'type' => 'off', 'channel' => $channel, 'track' => $t];
-            }
+            $rawEvents[] = ['ms' => $ms, 'note' => $note, 'vel' => $velocity, 'dur' => 500, 'ch' => $channel];
             
         } elseif ($eventType == 0x80) {
             $note = ord($data[$offset++]);
-            $velocity = ord($data[$offset++]); // считываем второй байт (velocity/release)
+            $velocity = 0;
+            $offset++;
             
             $ms = round(($currentTick * 500000) / ($ticksPerQuarter * 1000));
-            $rawEvents[] = ['time' => $ms, 'note' => $note, 'vel' => 0, 'type' => 'off', 'channel' => $channel, 'track' => $t];
+            $rawEvents[] = ['ms' => $ms, 'note' => $note, 'vel' => 0, 'dur' => 0, 'ch' => $channel];
             
         } elseif ($eventType == 0xC0 || $eventType == 0xD0) {
             $offset += 1;
@@ -107,40 +103,50 @@ for ($t = 0; $t < $tracksCount; $t++) {
 
 // Сортируем события по времени
 usort($rawEvents, function($a, $b) {
-    return $a['time'] - $b['time'];
+    return $a['ms'] - $b['ms'];
 });
 
-// Связываем Note On с Note Off для вычисления длительности
+// Вычисляем длительность нот и убираем дубликаты нажатий на одном и том же миллисекунде
 $activeNotes = [];
-$output = [];
+$processedNotes = [];
 
-foreach ($rawEvents as $ev) {
-    $time = $ev['time'];
+foreach ($rawEvents as &$ev) {
     $note = $ev['note'];
-    $vel = $ev['vel'];
-    $type = $ev['type'];
-    $channel = $ev['channel'];
-    
-    // Ключ для отслеживания конкретной ноты
-    $key = $note . '_' . $channel;
-    
-    if ($type == 'on') {
-        // Если нота уже играла, принудительно закрываем ее
-        if (isset($activeNotes[$key])) {
-            $startData = $activeNotes[$key];
-            $duration = max(50, $time - $startData['time']);
-            $output[] = "{$startData['time']},{$startData['note']},{$startData['vel']},{$duration},{$startData['channel']}";
+    if ($ev['vel'] > 0) {
+        // Уникальный ключ для проверки дублей на том же мс
+        $dupKey = $ev['ms'] . "_" . $note;
+        if (isset($processedNotes[$dupKey])) {
+            continue; // Пропускаем дублирующееся нажатие
         }
-        $activeNotes[$key] = ['time' => $time, 'note' => $note, 'vel' => $vel, 'channel' => $channel];
+        $processedNotes[$dupKey] = true;
+        
+        $activeNotes[$note] = [
+            'ms' => $ev['ms'],
+            'index' => count($output ?? [])
+        ];
+        // Временный слот в выводе
+        $output[] = [$ev['ms'], $note, $ev['vel'], 500, $ev['ch']];
     } else {
-        if (isset($activeNotes[$key])) {
-            $startData = $activeNotes[$key];
-            $duration = max(50, $time - $startData['time']);
-            $output[] = "{$startData['time']},{$startData['note']},{$startData['vel']},{$duration},{$startData['channel']}";
-            unset($activeNotes[$key]);
+        if (isset($activeNotes[$note])) {
+            $startIndex = $activeNotes[$note]['index'];
+            $startMs = $activeNotes[$note]['ms'];
+            $duration = max(50, $ev['ms'] - $startMs);
+            
+            // Обновляем длительность у ранее записанной ноты
+            if (isset($output[$startIndex])) {
+                $output[$startIndex][3] = $duration;
+            }
+            unset($activeNotes[$note]);
         }
     }
 }
+unset($ev);
 
-echo implode(";", $output);
+// Собираем обратно в строку для E2
+$finalOutput = [];
+foreach ($output as $item) {
+    $finalOutput[] = implode(",", $item);
+}
+
+echo implode(";", $finalOutput);
 ?>
