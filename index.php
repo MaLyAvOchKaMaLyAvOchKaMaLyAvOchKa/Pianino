@@ -64,6 +64,8 @@ for ($t = 0; $t < $tracksCount; $t++) {
         $deltaTime = readVlv($data, $offset);
         $currentTick += $deltaTime;
         
+        if ($offset >= strlen($data)) break;
+        
         $statusByte = ord($data[$offset]);
         if ($statusByte & 0x80) {
             $runningStatus = $statusByte;
@@ -87,8 +89,7 @@ for ($t = 0; $t < $tracksCount; $t++) {
             
         } elseif ($eventType == 0x80) {
             $note = ord($data[$offset++]);
-            $velocity = 0;
-            $offset++;
+            $velocity = ord($data[$offset++]); // Исправлено: теперь корректно считывается второй байт
             
             $rawEvents[] = [
                 'tick' => $currentTick,
@@ -112,6 +113,10 @@ for ($t = 0; $t < $tracksCount; $t++) {
                 $microsecondsPerQuarter = ($b1 << 16) + ($b2 << 8) + $b3;
             }
             
+            $offset += $len;
+        } elseif ($statusByte == 0xF0 || $statusByte == 0xF7) {
+            // Безопасный пропуск SysEx сообщений, если они есть
+            $len = readVlv($data, $offset);
             $offset += $len;
         }
     }
