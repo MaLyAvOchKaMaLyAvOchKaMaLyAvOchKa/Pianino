@@ -89,7 +89,7 @@ for ($t = 0; $t < $tracksCount; $t++) {
             
         } elseif ($eventType == 0x80) {
             $note = ord($data[$offset++]);
-            $velocity = ord($data[$offset++]); // Исправлено: теперь корректно считывается второй байт
+            $velocity = ord($data[$offset++]);
             
             $rawEvents[] = [
                 'tick' => $currentTick,
@@ -115,7 +115,6 @@ for ($t = 0; $t < $tracksCount; $t++) {
             
             $offset += $len;
         } elseif ($statusByte == 0xF0 || $statusByte == 0xF7) {
-            // Безопасный пропуск SysEx сообщений, если они есть
             $len = readVlv($data, $offset);
             $offset += $len;
         }
@@ -138,6 +137,7 @@ foreach ($rawEvents as $ev) {
             $prev = $activeNotes[$note];
             $duration = max($ms - $prev['ms'], 50);
             $output[] = "{$prev['ms']},{$note},{$prev['vel']},{$duration}";
+            unset($activeNotes[$note]);
         }
         $activeNotes[$note] = [
             'ms' => $ms,
@@ -152,6 +152,16 @@ foreach ($rawEvents as $ev) {
         }
     }
 }
+
+foreach ($activeNotes as $note => $prev) {
+    $output[] = "{$prev['ms']},{$note},{$prev['vel']},500";
+}
+
+usort($output, function($a, $b) {
+    $timeA = explode(',', $a)[0];
+    $timeB = explode(',', $b)[0];
+    return $timeA - $timeB;
+});
 
 echo implode(";", $output);
 ?>
