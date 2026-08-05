@@ -78,11 +78,13 @@ for ($t = 0; $t < $tracksCount; $t++) {
             $velocity = ord($data[$offset++]);
             
             $ms = round(($currentTick * 500000) / ($ticksPerQuarter * 1000));
-            $rawEvents[] = ['ms' => $ms, 'note' => $note, 'vel' => $velocity, 'ch' => $channel];
+            // Если velocity == 0, это эквивалентно Note Off
+            $realVel = ($velocity > 0) ? $velocity : 0;
+            $rawEvents[] = ['ms' => $ms, 'note' => $note, 'vel' => $realVel, 'ch' => $channel];
             
         } elseif ($eventType == 0x80) {
             $note = ord($data[$offset++]);
-            $velocity = ord($data[$offset++]); // Читаем реальную velocity отпускания
+            $velocity = ord($data[$offset++]);
             
             $ms = round(($currentTick * 500000) / ($ticksPerQuarter * 1000));
             $rawEvents[] = ['ms' => $ms, 'note' => $note, 'vel' => 0, 'ch' => $channel];
@@ -101,11 +103,14 @@ for ($t = 0; $t < $tracksCount; $t++) {
 
 // Сортируем события по времени
 usort($rawEvents, function($a, $b) {
+    if ($a['ms'] == $b['ms']) {
+        return $b['vel'] - $a['vel']; // Сначала Note On, потом Note Off при равенстве времени
+    }
     return $a['ms'] - $b['ms'];
 });
 
 $output = [];
-$activeNotes = []; // Хранит индексы активных нажатий для каждой ноты и канала
+$activeNotes = []; // [канал_нота] => индекс в $output
 
 foreach ($rawEvents as $ev) {
     $note = $ev['note'];
@@ -116,31 +121,37 @@ foreach ($rawEvents as $ev) {
     $key = $ch . "_" . $note;
 
     if ($vel > 0) {
-        // Если нота уже была зажата — принудительно закрываем предыдущую перед открытием новой
+        // Если нота уже была зажата — закрываем старую перед открытием новой
         if (isset($activeNotes[$key])) {
             $idx = $activeNotes[$key];
             $startMs = $output[$idx][0];
-            $duration = max(50, $ms - $startMs);
-            $output[$idx][3] = $duration;
+            $output[$idx][3] = max(80, $ms - $startMs);
             unset($activeNotes[$key]);
         }
 
-        // Добавляем новое нажатие [время, нота, громкость, длительность(пока заглушка), канал]
         $activeNotes[$key] = count($output);
-        $output[] = [$ms, $note, $vel, 200, $ch];
+        // Формат: [время_старта, нота, громкость, длительность_пока_заглушка, канал]
+        $output[] = [$ms, $note, $vel, 300, $ch];
     } else {
-        // Событие отпускания ноты (Note Off или vel == 0)
+        // Событие отпускания
         if (isset($activeNotes[$key])) {
             $idx = $activeNotes[$key];
             $startMs = $output[$idx][0];
-            $duration = max(50, $ms - $startMs);
-            $output[$idx][3] = $duration;
+            $duration = $ms - $startMs;
+            
+            // Защита от нулевых или отрицательных длительностей
+            $output[$idx][3] = max(80, $duration);
             unset($activeNotes[$key]);
         }
     }
 }
 
-// Собираем в итоговую строку для E2
+// Защита для нот, у которых вообще не было события Note Off в файле
+foreach ($activeNotes as $key => $idx) {
+    $output[$idx][3] = 400; // Стандартная мягкая длина для зависших нот
+}
+
+// Собираем обратно в строку для E2
 $finalOutput = [];
 foreach ($output as $item) {
     $finalOutput[] = implode(",", $item);
